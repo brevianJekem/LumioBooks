@@ -32,13 +32,27 @@ export default function BookReader({ bookId }) {
   const [inputPage,    setInputPage]    = useState('1');
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [autoScroll,   setAutoScroll]   = useState(false);
-  const [speedIdx,     setSpeedIdx]     = useState(1); // Normal default
+  const [speedIdx,     setSpeedIdx]     = useState(1);
 
   const canvasRef      = useRef(null);
   const renderTask     = useRef(null);
   const containerRef   = useRef(null);
+  const wrapRef        = useRef(null);
   const autoScrollRef  = useRef(null);
   const wheelDebounce  = useRef(null);
+
+  // Auto-fit scale to container width
+  const fitScale = useCallback(async (doc, pageNum) => {
+    if (!doc || !wrapRef.current) return;
+    const page     = await doc.getPage(pageNum);
+    const vp       = page.getViewport({ scale: 1 });
+    const padding  = window.innerWidth < 640 ? 32 : 64;
+    const maxW     = wrapRef.current.clientWidth - padding;
+    const maxH     = wrapRef.current.clientHeight - padding;
+    const fitW     = maxW / vp.width;
+    const fitH     = maxH / vp.height;
+    setScale(Math.min(fitW, fitH, 2.5));
+  }, []);
 
   // Fetch book
   useEffect(() => {
@@ -70,6 +84,7 @@ export default function BookReader({ bookId }) {
         setPdfDoc(doc);
         setTotalPages(doc.numPages);
         setCurrentPage(1);
+        await fitScale(doc, 1);
       } catch {
         if (!cancelled) setError('Could not load PDF. The file may be unavailable.');
       } finally {
@@ -170,6 +185,14 @@ export default function BookReader({ bookId }) {
     return () => document.removeEventListener('fullscreenchange', onChange);
   }, []);
 
+  // Re-fit on resize
+  useEffect(() => {
+    if (!pdfDoc) return;
+    const onResize = () => fitScale(pdfDoc, currentPage);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [pdfDoc, currentPage, fitScale]);
+
   useEffect(() => { setInputPage(String(currentPage)); }, [currentPage]);
 
   const zoomIn  = () => setScale(s => Math.min(3,   +(s + 0.25).toFixed(2)));
@@ -253,7 +276,7 @@ export default function BookReader({ bookId }) {
             <button className="reader-btn" onClick={zoomOut} title="Zoom out">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
             </button>
-            <button className="reader-btn" onClick={() => setScale(1.2)} style={{ fontSize: 'var(--text-xs)', width: 'auto', padding: '0 6px', fontFamily: 'var(--font-mono)' }}>
+            <button className="reader-btn" onClick={() => fitScale(pdfDoc, currentPage)} style={{ fontSize: 'var(--text-xs)', width: 'auto', padding: '0 6px', fontFamily: 'var(--font-mono)' }} title="Fit to screen">
               {Math.round(scale * 100)}%
             </button>
             <button className="reader-btn" onClick={zoomIn} title="Zoom in">
@@ -324,7 +347,7 @@ export default function BookReader({ bookId }) {
       )}
 
       {/* Canvas */}
-      <div className="reader-canvas-wrap">
+      <div className="reader-canvas-wrap" ref={wrapRef}>
         {loading && (
           <div className="reader-empty">
             <div className="loader-dot" />

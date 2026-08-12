@@ -848,29 +848,57 @@ img, svg { display: block; }
 
 /* ─── PDF Reader ─────────────────────────────────────────────────────────────── */
 .reader-page {
-  background: var(--bg-sunken);
-  min-height: calc(100vh - var(--nav-height));
+  background: #1a1a1a;
+  height: 100vh;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .reader-toolbar {
-  background: var(--bg);
-  border-bottom: 1px solid var(--border-soft);
-  padding: var(--space-3) var(--space-6);
+  background: rgba(28, 28, 30, 0.95);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  padding: 0 var(--space-4);
+  height: 48px;
   display: flex;
   align-items: center;
-  gap: var(--space-4);
+  gap: var(--space-3);
   position: sticky;
-  top: var(--nav-height);
+  top: 0;
   z-index: 50;
+  flex-shrink: 0;
+  color: rgba(255,255,255,0.8);
+}
+
+.reader-toolbar .reader-btn {
+  color: rgba(255,255,255,0.6);
+}
+
+.reader-toolbar .reader-btn:hover {
+  background: rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.95);
+}
+
+.reader-toolbar .reader-btn:disabled {
+  opacity: 0.2;
+}
+
+.reader-toolbar .reader-page-input {
+  background: rgba(255,255,255,0.08);
+  border-color: rgba(255,255,255,0.12);
+  color: rgba(255,255,255,0.9);
+}
+
+.reader-toolbar .reader-page-sep {
+  color: rgba(255,255,255,0.3);
 }
 
 .reader-title {
   flex: 1;
   font-size: var(--text-sm);
   font-weight: 500;
-  color: var(--text-secondary);
+  color: rgba(255,255,255,0.6);
   text-align: center;
   white-space: nowrap;
   overflow: hidden;
@@ -880,15 +908,16 @@ img, svg { display: block; }
 .reader-controls {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1);
 }
 
 .reader-btn {
-  width: 36px; height: 36px;
+  width: 34px; height: 34px;
   display: flex; align-items: center; justify-content: center;
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
   transition: background 0.15s, color 0.15s;
+  flex-shrink: 0;
 }
 
 .reader-btn:hover { background: var(--bg-raised); color: var(--text-primary); }
@@ -910,27 +939,33 @@ img, svg { display: block; }
 .reader-page-sep {
   font-size: var(--text-xs);
   color: var(--text-tertiary);
+  white-space: nowrap;
 }
 
 .reader-canvas-wrap {
   flex: 1;
   display: flex;
+  align-items: flex-start;
   justify-content: center;
-  padding: var(--space-8);
   overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--space-6) var(--space-4);
+  scroll-behavior: smooth;
 }
 
 .reader-canvas-inner {
   background: white;
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-xl);
+  border-radius: 4px;
+  box-shadow: 0 8px 48px rgba(0,0,0,0.6);
   overflow: hidden;
-  max-width: 100%;
+  transition: box-shadow 0.3s;
+  flex-shrink: 0;
 }
 
 .reader-canvas-inner canvas {
   display: block;
   max-width: 100%;
+  height: auto;
 }
 
 .reader-empty {
@@ -940,7 +975,7 @@ img, svg { display: block; }
   align-items: center;
   justify-content: center;
   gap: var(--space-4);
-  color: var(--text-tertiary);
+  color: rgba(255,255,255,0.4);
 }
 
 .reader-empty-icon { opacity: 0.3; }
@@ -950,6 +985,13 @@ img, svg { display: block; }
   text-align: center;
   max-width: 280px;
   line-height: 1.6;
+  color: rgba(255,255,255,0.4);
+}
+
+@media (max-width: 640px) {
+  .reader-toolbar { padding: 0 var(--space-2); gap: var(--space-1); }
+  .reader-controls { gap: 2px; }
+  .reader-btn { width: 30px; height: 30px; }
 }
 
 /* ─── Auth ───────────────────────────────────────────────────────────────────── */
