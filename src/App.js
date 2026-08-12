@@ -1,372 +1,309 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { useApp } from '../App';
+import { useState, useEffect, createContext, useContext } from 'react';
+import { createClient } from '@supabase/supabase-js';
+import Home from './pages/Home';
+import BookReader from './pages/BookReader';
+import Auth from './pages/Auth';
+import PublisherDashboard from './pages/PublisherDashboard';
+import BookDetail from './pages/BookDetail';
+import './App.css';
 
-let pdfjsLib = null;
+// ─── Supabase ─────────────────────────────────────────────────────────────────
+const supabase = process.env.REACT_APP_SUPABASE_URL
+  ? createClient(
+      process.env.REACT_APP_SUPABASE_URL,
+      process.env.REACT_APP_SUPABASE_ANON_KEY
+    )
+  : {
+      auth: {
+        getSession:         async () => ({ data: { session: null } }),
+        onAuthStateChange:  () => ({ data: { subscription: { unsubscribe: () => {} } } }),
+        signInWithOtp:      async () => ({ error: null }),
+        signInWithPassword: async () => ({ error: { message: 'Supabase not connected.' } }),
+        signOut:            async () => ({}),
+      },
+    };
 
-async function getPdfJs() {
-  if (pdfjsLib) return pdfjsLib;
-  const pdfjs = await import('pdfjs-dist');
-  pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.js';
-  pdfjsLib = pdfjs;
-  return pdfjs;
-}
+// ─── Context ──────────────────────────────────────────────────────────────────
+export const AppContext = createContext(null);
+export const useApp = () => useContext(AppContext);
 
-// Auto-scroll speeds in ms per page
-const SPEEDS = [
-  { label: 'Slow',   ms: 8000 },
-  { label: 'Normal', ms: 5000 },
-  { label: 'Fast',   ms: 2500 },
+// ─── Data ─────────────────────────────────────────────────────────────────────
+const CATEGORIES = ['All', 'Design', 'Technology', 'Philosophy', 'Science', 'Literature', 'Business'];
+
+const BOOKS = [
+  {
+    id: '1', title: 'The Laws of Simplicity', author: 'John Maeda',
+    category: 'Design', year: 2006, pages: 128, downloads: 4200, rating: 4.7,
+    description: 'Ten laws for balancing simplicity and complexity in business, technology, and design.',
+    cover: null, file_url: null,
+  },
+  {
+    id: '2', title: 'The Design of Everyday Things', author: 'Don Norman',
+    category: 'Design', year: 1988, pages: 368, downloads: 8100, rating: 4.8,
+    description: 'A powerful primer on how — and why — some products satisfy customers while others frustrate them.',
+    cover: null, file_url: null,
+  },
+  {
+    id: '3', title: 'Thinking, Fast and Slow', author: 'Daniel Kahneman',
+    category: 'Science', year: 2011, pages: 499, downloads: 12300, rating: 4.6,
+    description: 'A tour of the mind and explains the two systems that drive the way we think.',
+    cover: null, file_url: null,
+  },
+  {
+    id: '4', title: 'Meditations', author: 'Marcus Aurelius',
+    category: 'Philosophy', year: 180, pages: 254, downloads: 9800, rating: 4.9,
+    description: 'A series of personal writings by the Roman Emperor — a source of guidance and self-improvement.',
+    cover: null, file_url: null,
+  },
+  {
+    id: '5', title: 'Zero to One', author: 'Peter Thiel',
+    category: 'Business', year: 2014, pages: 224, downloads: 7600, rating: 4.5,
+    description: 'Notes on startups, or how to build the future. Original thinking about what it takes.',
+    cover: null, file_url: null,
+  },
+  {
+    id: '6', title: 'Clean Code', author: 'Robert C. Martin',
+    category: 'Technology', year: 2008, pages: 431, downloads: 15400, rating: 4.7,
+    description: 'A handbook of agile software craftsmanship for developers who care about their work.',
+    cover: null, file_url: null,
+  },
 ];
 
-export default function BookReader({ bookId }) {
-  const { navigate, supabase } = useApp();
+const STATS = {
+  books:      BOOKS.length,
+  downloads:  BOOKS.reduce((s, b) => s + b.downloads, 0),
+  categories: CATEGORIES.filter(c => c !== 'All').length,
+  avgRating:  (BOOKS.reduce((s, b) => s + b.rating, 0) / BOOKS.length).toFixed(1),
+};
 
-  const [book,         setBook]         = useState(null);
-  const [bookLoading,  setBookLoading]  = useState(true);
-  const [pdfDoc,       setPdfDoc]       = useState(null);
-  const [currentPage,  setCurrentPage]  = useState(1);
-  const [totalPages,   setTotalPages]   = useState(0);
-  const [scale,        setScale]        = useState(1.2);
-  const [loading,      setLoading]      = useState(false);
-  const [error,        setError]        = useState(null);
-  const [inputPage,    setInputPage]    = useState('1');
-  const [isFullscreen, setIsFullscreen] = useState(false);
-  const [autoScroll,   setAutoScroll]   = useState(false);
-  const [speedIdx,     setSpeedIdx]     = useState(1); // Normal default
+// ─── Router ───────────────────────────────────────────────────────────────────
+function getRoute() {
+  return window.location.hash.replace('#', '') || '/';
+}
 
-  const canvasRef      = useRef(null);
-  const renderTask     = useRef(null);
-  const containerRef   = useRef(null);
-  const autoScrollRef  = useRef(null);
-  const wheelDebounce  = useRef(null);
+// ─── App ──────────────────────────────────────────────────────────────────────
+export default function App() {
+  const [theme, setTheme]     = useState(() => localStorage.getItem('lb-theme') || 'light');
+  const [route, setRoute]     = useState(getRoute);
+  const [session, setSession] = useState(null);
+  const [loading, setLoading] = useState(true);
 
-  // Fetch book
   useEffect(() => {
-    async function fetchBook() {
-      setBookLoading(true);
-      const { data, error: err } = await supabase
-        .from('books').select('*').eq('id', bookId).single();
-      if (!err && data) setBook(data);
-      setBookLoading(false);
-    }
-    fetchBook();
-  }, [bookId, supabase]);
-
-  // Load PDF
-  useEffect(() => {
-    if (!book?.file_url) return;
-    let cancelled = false;
-
-    async function load() {
-      try {
-        setLoading(true); setError(null);
-        const pdfjs    = await getPdfJs();
-        const response = await fetch(book.file_url);
-        if (!response.ok) throw new Error('Failed to fetch PDF');
-        const arrayBuf = await response.arrayBuffer();
-        if (cancelled) return;
-        const doc = await pdfjs.getDocument({ data: arrayBuf }).promise;
-        if (cancelled) return;
-        setPdfDoc(doc);
-        setTotalPages(doc.numPages);
-        setCurrentPage(1);
-      } catch {
-        if (!cancelled) setError('Could not load PDF. The file may be unavailable.');
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-    load();
-    return () => { cancelled = true; };
-  }, [book?.file_url]);
-
-  // Render page
-  const renderPage = useCallback(async (doc, pageNum, pageScale) => {
-    if (!canvasRef.current || !doc) return;
-    if (renderTask.current) { renderTask.current.cancel(); renderTask.current = null; }
-
-    try {
-      const page     = await doc.getPage(pageNum);
-      const viewport = page.getViewport({ scale: pageScale });
-      const canvas   = canvasRef.current;
-      const ctx      = canvas.getContext('2d');
-
-      canvas.width        = viewport.width;
-      canvas.height       = viewport.height;
-      canvas.style.width  = `${viewport.width}px`;
-      canvas.style.height = `${viewport.height}px`;
-
-      const task = page.render({ canvasContext: ctx, viewport });
-      renderTask.current = task;
-      await task.promise;
-      renderTask.current = null;
-    } catch (err) {
-      if (err?.name !== 'RenderingCancelledException') setError('Failed to render page.');
-    }
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setLoading(false);
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    return () => subscription.unsubscribe();
   }, []);
 
   useEffect(() => {
-    if (pdfDoc) renderPage(pdfDoc, currentPage, scale);
-  }, [pdfDoc, currentPage, scale, renderPage]);
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('lb-theme', theme);
+  }, [theme]);
 
-  // ─── Scroll wheel → page turn ────────────────────────────────────────────
   useEffect(() => {
-    const wrap = document.querySelector('.reader-canvas-wrap');
-    if (!wrap || !pdfDoc) return;
-
-    const onWheel = (e) => {
-      e.preventDefault();
-      if (wheelDebounce.current) return;
-      wheelDebounce.current = setTimeout(() => { wheelDebounce.current = null; }, 400);
-
-      if (e.deltaY > 0) setCurrentPage(p => Math.min(totalPages, p + 1));
-      else              setCurrentPage(p => Math.max(1, p - 1));
-    };
-
-    wrap.addEventListener('wheel', onWheel, { passive: false });
-    return () => wrap.removeEventListener('wheel', onWheel);
-  }, [pdfDoc, totalPages]);
-
-  // ─── Keyboard nav ────────────────────────────────────────────────────────
-  useEffect(() => {
-    const onKey = (e) => {
-      if (e.target.tagName === 'INPUT') return;
-      if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === ' ')
-        setCurrentPage(p => Math.min(totalPages, p + 1));
-      if (e.key === 'ArrowLeft' || e.key === 'ArrowUp')
-        setCurrentPage(p => Math.max(1, p - 1));
-      if (e.key === 'Escape' && autoScroll) setAutoScroll(false);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [totalPages, autoScroll]);
-
-  // ─── Auto-scroll ─────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (autoScrollRef.current) clearInterval(autoScrollRef.current);
-
-    if (autoScroll && pdfDoc) {
-      autoScrollRef.current = setInterval(() => {
-        setCurrentPage(p => {
-          if (p >= totalPages) { setAutoScroll(false); return p; }
-          return p + 1;
-        });
-      }, SPEEDS[speedIdx].ms);
-    }
-
-    return () => { if (autoScrollRef.current) clearInterval(autoScrollRef.current); };
-  }, [autoScroll, speedIdx, pdfDoc, totalPages]);
-
-  // Stop auto-scroll when user manually turns page
-  const goTo = (p) => {
-    setAutoScroll(false);
-    setCurrentPage(Math.max(1, Math.min(totalPages, p)));
-  };
-
-  // Fullscreen
-  useEffect(() => {
-    const onChange = () => setIsFullscreen(!!document.fullscreenElement);
-    document.addEventListener('fullscreenchange', onChange);
-    return () => document.removeEventListener('fullscreenchange', onChange);
+    const sync = () => setRoute(getRoute());
+    window.addEventListener('hashchange', sync);
+    return () => window.removeEventListener('hashchange', sync);
   }, []);
 
-  useEffect(() => { setInputPage(String(currentPage)); }, [currentPage]);
-
-  const zoomIn  = () => setScale(s => Math.min(3,   +(s + 0.25).toFixed(2)));
-  const zoomOut = () => setScale(s => Math.max(0.5, +(s - 0.25).toFixed(2)));
-
-  const handlePageInput = (e) => {
-    setInputPage(e.target.value);
-    const n = parseInt(e.target.value, 10);
-    if (n >= 1 && n <= totalPages) goTo(n);
+  const navigate = (path) => {
+    window.location.hash = path;
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const toggleFullscreen = () => {
-    if (!document.fullscreenElement) containerRef.current?.requestFullscreen?.();
-    else document.exitFullscreen?.();
+  const ctx = {
+    supabase, session, navigate, theme,
+    books: BOOKS, categories: CATEGORIES, stats: STATS,
   };
 
-  const handleDownload = () => {
-    if (!book?.file_url) return;
-    const a = document.createElement('a');
-    a.href = book.file_url; a.download = `${book.title}.pdf`; a.target = '_blank'; a.click();
-  };
-
-  // ─── Loading / error states ───────────────────────────────────────────────
-  if (bookLoading) return (
-    <div className="reader-page">
-      <div className="reader-toolbar">
-        <button className="reader-btn" onClick={() => navigate('/')}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="15 18 9 12 15 6"/></svg>
-        </button>
-        <span className="reader-title">Loading…</span>
-      </div>
-      <div className="reader-empty"><div className="loader-dot" /></div>
-    </div>
+  if (loading) return (
+    <div className="app-loader"><span className="loader-dot" /></div>
   );
 
-  if (!book) return (
-    <div className="reader-page">
-      <div className="reader-toolbar">
-        <button className="reader-btn" onClick={() => navigate('/')}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="15 18 9 12 15 6"/></svg>
-        </button>
-        <span className="reader-title">Reader</span>
-      </div>
-      <div className="reader-empty">
-        <BookIcon />
-        <p className="reader-empty-text">Book not found.</p>
-        <button className="btn btn-secondary" onClick={() => navigate('/')}>Back to library</button>
-      </div>
-    </div>
-  );
+  const renderRoute = () => {
+    if (route === '/' || route === '')  return <Home />;
+    if (route === '/auth')              return <Auth />;
+    if (route === '/account')           return <Account />;
+    if (route === '/publish')           return <PublisherDashboard />;
+    if (route.startsWith('/read/'))     return <BookReader bookId={route.split('/read/')[1]} />;
+    if (route.startsWith('/book/'))     return <BookDetail bookId={route.split('/book/')[1]} />;
+    return <Home />;
+  };
 
   return (
-    <div className="reader-page" ref={containerRef}>
-      {/* Toolbar */}
-      <div className="reader-toolbar">
-        <button className="reader-btn" onClick={() => { setAutoScroll(false); navigate(`/book/${book.id}`); }} title="Back">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="15 18 9 12 15 6"/></svg>
-        </button>
-
-        <span className="reader-title">{book.title}</span>
-
-        {book.file_url && (
-          <div className="reader-controls">
-            {/* Prev */}
-            <button className="reader-btn" onClick={() => goTo(currentPage - 1)} disabled={currentPage <= 1} title="Previous (←)">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="15 18 9 12 15 6"/></svg>
-            </button>
-
-            {/* Page input */}
-            <input className="reader-page-input" value={inputPage} onChange={handlePageInput} onFocus={e => e.target.select()} type="number" min={1} max={totalPages} />
-            <span className="reader-page-sep">/ {totalPages}</span>
-
-            {/* Next */}
-            <button className="reader-btn" onClick={() => goTo(currentPage + 1)} disabled={currentPage >= totalPages} title="Next (→)">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
-            </button>
-
-            <span style={{ width: 1, height: 20, background: 'var(--border-soft)', margin: '0 4px' }} />
-
-            {/* Zoom */}
-            <button className="reader-btn" onClick={zoomOut} title="Zoom out">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
-            </button>
-            <button className="reader-btn" onClick={() => setScale(1.2)} style={{ fontSize: 'var(--text-xs)', width: 'auto', padding: '0 6px', fontFamily: 'var(--font-mono)' }}>
-              {Math.round(scale * 100)}%
-            </button>
-            <button className="reader-btn" onClick={zoomIn} title="Zoom in">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
-            </button>
-
-            <span style={{ width: 1, height: 20, background: 'var(--border-soft)', margin: '0 4px' }} />
-
-            {/* Auto-scroll speed — only when active */}
-            {autoScroll && (
-              <button
-                className="reader-btn"
-                style={{ width: 'auto', padding: '0 8px', fontSize: 'var(--text-xs)', fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}
-                onClick={() => setSpeedIdx(i => (i + 1) % SPEEDS.length)}
-                title="Change speed"
-              >
-                {SPEEDS[speedIdx].label}
-              </button>
-            )}
-
-            {/* Auto-scroll toggle */}
-            <button
-              className="reader-btn"
-              onClick={() => setAutoScroll(a => !a)}
-              title={autoScroll ? 'Stop auto-scroll (Esc)' : 'Auto-scroll'}
-              style={{ color: autoScroll ? '#34C759' : 'inherit' }}
-            >
-              {autoScroll
-                ? <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
-                : <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-              }
-            </button>
-
-            <span style={{ width: 1, height: 20, background: 'var(--border-soft)', margin: '0 4px' }} />
-
-            {/* Fullscreen */}
-            <button className="reader-btn" onClick={toggleFullscreen} title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}>
-              {isFullscreen
-                ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="10" y1="14" x2="3" y2="21"/><line x1="21" y1="3" x2="14" y2="10"/></svg>
-                : <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
-              }
-            </button>
-
-            {/* Download */}
-            <button className="reader-btn" onClick={handleDownload} title="Download PDF">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-            </button>
-          </div>
-        )}
+    <AppContext.Provider value={ctx}>
+      <div className="app">
+        <Nav
+          theme={theme}
+          session={session}
+          navigate={navigate}
+          onToggleTheme={() => setTheme(t => t === 'light' ? 'dark' : 'light')}
+        />
+        <main className="app-main">{renderRoute()}</main>
+        <Footer navigate={navigate} />
       </div>
+    </AppContext.Provider>
+  );
+}
 
-      {/* Auto-scroll banner */}
-      {autoScroll && (
+// ─── Account ──────────────────────────────────────────────────────────────────
+function Account() {
+  const { session, supabase, navigate } = useApp();
+
+  if (!session) {
+    navigate('/auth');
+    return null;
+  }
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+    navigate('/');
+  };
+
+  const email    = session.user.email;
+  const joined   = new Date(session.user.created_at).toLocaleDateString('en-GB', { year: 'numeric', month: 'long', day: 'numeric' });
+  const initials = email.slice(0, 2).toUpperCase();
+
+  return (
+    <div className="auth-page">
+      <div className="auth-card">
+        {/* Avatar */}
         <div style={{
-          position: 'fixed', top: 48, left: 0, right: 0, zIndex: 40,
-          background: 'rgba(52,199,89,0.08)',
-          borderBottom: '1px solid rgba(52,199,89,0.2)',
-          padding: '6px 16px',
+          width: 56, height: 56,
+          borderRadius: '50%',
+          background: 'var(--bg-sunken)',
+          border: '1px solid var(--border-soft)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          gap: 12, fontSize: 'var(--text-xs)', color: '#34C759',
+          fontFamily: 'var(--font-display)',
+          fontSize: 'var(--text-lg)',
+          fontWeight: 600,
+          color: 'var(--text-secondary)',
+          margin: '0 auto var(--space-6)',
         }}>
-          <span>Auto-scrolling · {SPEEDS[speedIdx].label}</span>
-          <button onClick={() => setSpeedIdx(i => (i + 1) % SPEEDS.length)} style={{ color: '#34C759', fontWeight: 600, fontSize: 'var(--text-xs)' }}>
-            Change speed
+          {initials}
+        </div>
+
+        <p className="auth-eyebrow">Account</p>
+        <h1 className="auth-title" style={{ fontSize: 'var(--text-xl)' }}>
+          {email.split('@')[0]}
+        </h1>
+        <p className="auth-sub" style={{ marginBottom: 'var(--space-8)' }}>
+          {email}<br />
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
+            Member since {joined}
+          </span>
+        </p>
+
+        {/* Actions */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+          <button
+            className="btn btn-secondary"
+            style={{ width: '100%', justifyContent: 'center' }}
+            onClick={() => navigate('/')}
+          >
+            Browse library
           </button>
-          <span style={{ opacity: 0.6 }}>· Press Esc to stop</span>
+          <button
+            className="btn btn-secondary"
+            style={{ width: '100%', justifyContent: 'center' }}
+            onClick={() => navigate('/publish')}
+          >
+            Publish a book
+          </button>
+          <button
+            className="btn btn-ghost"
+            style={{ width: '100%', justifyContent: 'center', color: 'var(--text-tertiary)', marginTop: 'var(--space-2)' }}
+            onClick={handleSignOut}
+          >
+            Sign out
+          </button>
         </div>
-      )}
-
-      {/* Canvas */}
-      <div className="reader-canvas-wrap">
-        {loading && (
-          <div className="reader-empty">
-            <div className="loader-dot" />
-            <p className="reader-empty-text">Loading PDF…</p>
-          </div>
-        )}
-        {error && (
-          <div className="reader-empty">
-            <BookIcon />
-            <p className="reader-empty-text">{error}</p>
-            <button className="btn btn-secondary" onClick={() => navigate(`/book/${book.id}`)}>Back to book</button>
-          </div>
-        )}
-        {!book.file_url && !loading && (
-          <div className="reader-empty">
-            <BookIcon />
-            <p className="reader-empty-text">No PDF available yet.</p>
-            <button className="btn btn-secondary" onClick={() => navigate(`/book/${book.id}`)}>Back to book</button>
-          </div>
-        )}
-        {book.file_url && !loading && !error && (
-          <div className="reader-canvas-inner">
-            <canvas ref={canvasRef} />
-          </div>
-        )}
       </div>
-
-      {/* Progress bar */}
-      {totalPages > 0 && (
-        <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, height: 2, zIndex: 50, background: 'var(--border-soft)' }}>
-          <div style={{ height: '100%', background: autoScroll ? '#34C759' : 'var(--text-primary)', width: `${(currentPage / totalPages) * 100}%`, transition: 'width 0.4s ease' }} />
-        </div>
-      )}
     </div>
   );
 }
 
-function BookIcon() {
+// ─── Nav ──────────────────────────────────────────────────────────────────────
+function Nav({ theme, session, navigate, onToggleTheme }) {
+  const [scrolled,  setScrolled]  = useState(false);
+  const [menuOpen,  setMenuOpen]  = useState(false);
+  const [route,     setRoute]     = useState(getRoute());
+
+  useEffect(() => {
+    const onScroll = () => setScrolled(window.scrollY > 24);
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
+
+  useEffect(() => {
+    const sync = () => { setRoute(getRoute()); setMenuOpen(false); };
+    window.addEventListener('hashchange', sync);
+    return () => window.removeEventListener('hashchange', sync);
+  }, []);
+
+  const go       = (path) => { navigate(path); setMenuOpen(false); };
+  const isActive = (path) => path === '/'
+    ? route === '/' || route === ''
+    : route.startsWith(path);
+
   return (
-    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" style={{ marginBottom: 'var(--space-4)', opacity: 0.3 }}>
-      <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
-      <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
-    </svg>
+    <header className={`nav${scrolled ? ' nav--scrolled' : ''}`}>
+      <button className="nav-logo" onClick={() => go('/')}>
+        LumioBooks
+      </button>
+
+      <nav className={`nav-links${menuOpen ? ' nav-links--open' : ''}`}>
+        <button className={isActive('/')        ? 'nav-link-active' : ''} onClick={() => go('/')}>Browse</button>
+        <button className={isActive('/publish') ? 'nav-link-active' : ''} onClick={() => go('/publish')}>Publish</button>
+        {session
+          ? <button className={isActive('/account') ? 'nav-link-active' : ''} onClick={() => go('/account')}>Account</button>
+          : <button className={`nav-cta${isActive('/auth') ? ' nav-cta--on' : ''}`} onClick={() => go('/auth')}>Sign in</button>
+        }
+      </nav>
+
+      <div className="nav-controls">
+        <button
+          className={`theme-toggle${theme === 'dark' ? ' theme-toggle--dark' : ''}`}
+          onClick={onToggleTheme}
+          aria-label="Toggle theme"
+        >
+          <span className="toggle-track">
+            <span className="toggle-thumb">
+              {theme === 'light'
+                ? <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+                : <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+              }
+            </span>
+          </span>
+        </button>
+
+        <button
+          className={`hamburger${menuOpen ? ' hamburger--open' : ''}`}
+          onClick={() => setMenuOpen(m => !m)}
+          aria-label="Menu"
+        >
+          <span /><span /><span />
+        </button>
+      </div>
+    </header>
+  );
+}
+
+// ─── Footer ───────────────────────────────────────────────────────────────────
+function Footer({ navigate }) {
+  return (
+    <footer className="footer">
+      <div className="footer-inner">
+        <span className="footer-logo">LumioBooks</span>
+        <nav className="footer-links">
+          <button onClick={() => navigate('/')}>Browse</button>
+          <button onClick={() => navigate('/publish')}>Publish</button>
+          <button onClick={() => navigate('/auth')}>Sign in</button>
+        </nav>
+        <p className="footer-copy">© {new Date().getFullYear()} LumioBooks</p>
+      </div>
+    </footer>
   );
 }
