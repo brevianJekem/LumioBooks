@@ -1,56 +1,118 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useApp } from '../App';
 
 const TINTS = {
-  Design:     '#E8E6DF',
-  Technology: '#E4E5E8',
-  Philosophy: '#EAE8E2',
-  Science:    '#E6E8E4',
-  Literature: '#ECE9E3',
-  Business:   '#E9E7E2',
+  Design: '#E8E6DF', Technology: '#E4E5E8', Philosophy: '#EAE8E2',
+  Science: '#E6E8E4', Literature: '#ECE9E3', Business: '#E9E7E2',
 };
 
+// ─── Gutenberg helpers (silent) ───────────────────────────────────────────────
+function gutenbergCategory(subjects = []) {
+  const s = subjects.join(' ').toLowerCase();
+  if (s.includes('philosoph'))                              return 'Philosophy';
+  if (s.includes('science') || s.includes('biology'))      return 'Science';
+  if (s.includes('technolog') || s.includes('computer'))   return 'Technology';
+  if (s.includes('business') || s.includes('econom'))      return 'Business';
+  if (s.includes('design') || s.includes('art'))           return 'Design';
+  return 'Literature';
+}
+
+function gutToBook(g) {
+  const formats  = g.formats || {};
+  const file_url = formats['application/pdf'] || formats['application/pdf; charset=utf-8'] || null;
+  const cover_url = formats['image/jpeg'] || formats['image/png'] || null;
+  return {
+    id:          `gut-${g.id}`,
+    title:       g.title,
+    author:      g.authors?.[0]?.name || 'Unknown',
+    category:    gutenbergCategory(g.subjects),
+    description: g.subjects?.slice(0, 3).join(', ') || '',
+    cover_url,
+    file_url,
+    downloads:   g.download_count || 0,
+    rating:      0,
+    pages:       0,
+    year:        g.authors?.[0]?.birth_year || null,
+    _gutenberg:  true, // flag — not in our DB
+  };
+}
+
+async function fetchGutenberg(query) {
+  try {
+    const res  = await fetch(`https://gutendex.com/books/?search=${encodeURIComponent(query)}&mime_type=application/pdf`);
+    const data = await res.json();
+    return (data.results || []).map(gutToBook).filter(b => b.file_url);
+  } catch {
+    return [];
+  }
+}
+
+// ─── Home ─────────────────────────────────────────────────────────────────────
 export default function Home() {
   const { supabase, categories, navigate } = useApp();
 
-  const [books,          setBooks]          = useState([]);
-  const [loading,        setLoading]        = useState(true);
+  const [dbBooks,        setDbBooks]        = useState([]);
+  const [gutBooks,       setGutBooks]       = useState([]);
+  const [dbLoading,      setDbLoading]      = useState(true);
+  const [gutLoading,     setGutLoading]     = useState(false);
   const [query,          setQuery]          = useState('');
   const [activeCategory, setActiveCategory] = useState('All');
 
-  // Fetch approved books from Supabase
+  const searchTimer = useRef(null);
+
+  // Load our database books once
   useEffect(() => {
     async function fetchBooks() {
-      setLoading(true);
+      setDbLoading(true);
       const { data, error } = await supabase
-        .from('books')
-        .select('*')
-        .eq('status', 'approved')
+        .from('books').select('*').eq('status', 'approved')
         .order('created_at', { ascending: false });
-
-      if (!error && data) setBooks(data);
-      setLoading(false);
+      if (!error && data) setDbBooks(data);
+      setDbLoading(false);
     }
     fetchBooks();
   }, [supabase]);
 
-  // Derived stats from live data
-  const stats = {
-    books:      books.length,
-    downloads:  books.reduce((s, b) => s + (b.downloads || 0), 0),
-    categories: categories.filter(c => c !== 'All').length,
-    avgRating:  books.length
-      ? (books.reduce((s, b) => s + (b.rating || 0), 0) / books.length).toFixed(1)
-      : '—',
-  };
+  // Silent Gutenberg fetch — fires when user types, debounced
+  const fetchFromGutenberg = useCallback(async (q) => {
+    if (!q || q.length < 2) { setGutBooks([]); return; }
+    setGutLoading(true);
+    const results = await fetchGutenberg(q);
+    // Only show Gutenberg books not already in our DB
+    const dbTitles = new Set(dbBooks.map(b => b.title.toLowerCase()));
+    setGutBooks(results.filter(b => !dbTitles.has(b.title.toLowerCase())));
+    setGutLoading(false);
+  }, [dbBooks]);
 
-  const filtered = books.filter(book => {
+  // Debounce search → auto-fetch Gutenberg
+  useEffect(() => {
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    if (query.length < 2) { setGutBooks([]); return; }
+    searchTimer.current = setTimeout(() => fetchFromGutenberg(query), 600);
+    return () => clearTimeout(searchTimer.current);
+  }, [query, fetchFromGutenberg]);
+
+  // Merge: DB books first, then Gutenberg extras
+  const allBooks = [...dbBooks, ...gutBooks];
+
+  const filtered = allBooks.filter(book => {
     const matchCat   = activeCategory === 'All' || book.category === activeCategory;
     const matchQuery = !query ||
       book.title?.toLowerCase().includes(query.toLowerCase()) ||
       book.author?.toLowerCase().includes(query.toLowerCase());
     return matchCat && matchQuery;
   });
+
+  const stats = {
+    books:      dbBooks.length,
+    downloads:  dbBooks.reduce((s, b) => s + (b.downloads || 0), 0),
+    categories: categories.filter(c => c !== 'All').length,
+    avgRating:  dbBooks.length
+      ? (dbBooks.reduce((s, b) => s + (b.rating || 0), 0) / dbBooks.length).toFixed(1)
+      : '—',
+  };
+
+  const loading = dbLoading;
 
   return (
     <div className="page">
@@ -69,10 +131,15 @@ export default function Home() {
             <input
               className="search-input"
               type="search"
-              placeholder="Search books, authors…"
+              placeholder="Search any book or author…"
               value={query}
               onChange={e => setQuery(e.target.value)}
             />
+            {gutLoading && (
+              <span style={{ position: 'absolute', right: 16, top: '50%', transform: 'translateY(-50%)', fontSize: 11, color: 'var(--text-tertiary)' }}>
+                Searching…
+              </span>
+            )}
           </div>
 
           {/* Category pills */}
@@ -100,14 +167,14 @@ export default function Home() {
             )}
           </div>
 
-          {/* Loading state */}
+          {/* Loading skeletons */}
           {loading && (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 'var(--space-6)' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 'var(--space-6)' }}>
               {[...Array(6)].map((_, i) => (
                 <div key={i}>
                   <div className="skeleton" style={{ aspectRatio: '2/3', borderRadius: 'var(--radius-md)', marginBottom: 'var(--space-4)' }} />
-                  <div className="skeleton" style={{ height: 16, width: '80%', marginBottom: 8 }} />
-                  <div className="skeleton" style={{ height: 12, width: '50%' }} />
+                  <div className="skeleton" style={{ height: 14, width: '80%', marginBottom: 8 }} />
+                  <div className="skeleton" style={{ height: 11, width: '50%' }} />
                 </div>
               ))}
             </div>
@@ -120,7 +187,7 @@ export default function Home() {
                 <BookCard key={book.id} book={book} navigate={navigate} index={i} />
               ))}
 
-              {filtered.length === 0 && (
+              {filtered.length === 0 && !gutLoading && (
                 <div style={{ gridColumn: '1/-1', padding: 'var(--space-20) 0', textAlign: 'center', color: 'var(--text-tertiary)' }}>
                   <p style={{ marginBottom: 'var(--space-3)', fontSize: 'var(--text-base)' }}>
                     {query ? `No results for "${query}"` : 'No books yet.'}
@@ -155,9 +222,7 @@ function Hero({ stats, navigate }) {
           A curated library of PDF books. Read online, download freely, share generously.
         </p>
         <div className="hero-actions reveal" data-reveal>
-          <button className="btn btn-primary" onClick={() => navigate('/auth')}>
-            Get started free
-          </button>
+          <button className="btn btn-primary" onClick={() => navigate('/auth')}>Get started free</button>
           <button className="btn btn-secondary" onClick={() => document.querySelector('.search-wrap')?.scrollIntoView({ behavior: 'smooth' })}>
             Browse library
           </button>
@@ -166,10 +231,10 @@ function Hero({ stats, navigate }) {
 
       <div className="container">
         <div className="stats-strip reveal" data-reveal>
-          <StatItem value={stats.books}     label="Books" />
+          <StatItem value={stats.books} label="Books" />
           <StatItem value={stats.downloads > 0 ? `${(stats.downloads / 1000).toFixed(0)}k+` : '0'} label="Downloads" />
           <StatItem value={stats.categories} label="Categories" />
-          <StatItem value={stats.avgRating}  label="Avg rating" />
+          <StatItem value={stats.avgRating} label="Avg rating" />
         </div>
       </div>
     </section>
@@ -187,12 +252,20 @@ function StatItem({ value, label }) {
 
 // ─── Book card ────────────────────────────────────────────────────────────────
 function BookCard({ book, navigate, index }) {
+  const handleClick = () => {
+    // Gutenberg books open their PDF directly — no detail page in our DB
+    if (book._gutenberg) {
+      window.open(book.file_url, '_blank');
+    } else {
+      navigate(`/book/${book.id}`);
+    }
+  };
+
   return (
     <article
-      className="book-card reveal"
-      data-reveal
-      style={{ animationDelay: `${index * 60}ms` }}
-      onClick={() => navigate(`/book/${book.id}`)}
+      className="book-card"
+      style={{ animationDelay: `${index * 40}ms` }}
+      onClick={handleClick}
     >
       <div className="book-cover">
         {book.cover_url
@@ -210,8 +283,7 @@ function BookCard({ book, navigate, index }) {
               {book.rating}
             </span>
           )}
-          {book.pages > 0 && <span className="book-pages">{book.pages} pp.</span>}
-          {book.pages === 0 && <span className="book-pages">{book.category}</span>}
+          <span className="book-pages">{book.category}</span>
         </div>
       </div>
     </article>
