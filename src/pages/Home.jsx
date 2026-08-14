@@ -92,16 +92,22 @@ export default function Home() {
     return () => clearTimeout(searchTimer.current);
   }, [query, fetchFromGutenberg]);
 
-  // Merge: DB books first, then Gutenberg extras
-  const allBooks = [...dbBooks, ...gutBooks];
 
-  const filtered = allBooks.filter(book => {
+  // DB books filtered by query + category
+  const filteredDb = dbBooks.filter(book => {
     const matchCat   = activeCategory === 'All' || book.category === activeCategory;
     const matchQuery = !query ||
       book.title?.toLowerCase().includes(query.toLowerCase()) ||
       book.author?.toLowerCase().includes(query.toLowerCase());
     return matchCat && matchQuery;
   });
+
+  // Gutenberg results already match the query — just filter by category
+  const filteredGut = gutBooks.filter(book =>
+    activeCategory === 'All' || book.category === activeCategory
+  );
+
+  const filtered = [...filteredDb, ...filteredGut];
 
   const stats = {
     books:      dbBooks.length,
