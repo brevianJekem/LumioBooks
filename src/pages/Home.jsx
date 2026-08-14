@@ -6,45 +6,70 @@ const TINTS = {
   Science: '#E6E8E4', Literature: '#ECE9E3', Business: '#E9E7E2',
 };
 
-// ─── Gutenberg helpers (silent) ───────────────────────────────────────────────
-function gutenbergCategory(subjects = []) {
+// ─── External sources (silent) ────────────────────────────────────────────────
+function guessCategory(subjects = []) {
   const s = subjects.join(' ').toLowerCase();
-  if (s.includes('philosoph'))                              return 'Philosophy';
-  if (s.includes('science') || s.includes('biology'))      return 'Science';
-  if (s.includes('technolog') || s.includes('computer'))   return 'Technology';
-  if (s.includes('business') || s.includes('econom'))      return 'Business';
-  if (s.includes('design') || s.includes('art'))           return 'Design';
+  if (s.includes('philosoph'))                            return 'Philosophy';
+  if (s.includes('science') || s.includes('biology'))    return 'Science';
+  if (s.includes('technolog') || s.includes('computer')) return 'Technology';
+  if (s.includes('business') || s.includes('econom'))    return 'Business';
+  if (s.includes('design') || s.includes('art'))         return 'Design';
   return 'Literature';
 }
 
 function gutToBook(g) {
-  const formats  = g.formats || {};
-  const file_url = formats['application/pdf'] || formats['application/pdf; charset=utf-8'] || null;
+  const formats   = g.formats || {};
+  const file_url  = formats['application/pdf'] || formats['application/pdf; charset=utf-8'] || null;
   const cover_url = formats['image/jpeg'] || formats['image/png'] || null;
   return {
-    id:          `gut-${g.id}`,
-    title:       g.title,
+    id: `gut-${g.id}`, title: g.title,
     author:      g.authors?.[0]?.name || 'Unknown',
-    category:    gutenbergCategory(g.subjects),
+    category:    guessCategory(g.subjects),
     description: g.subjects?.slice(0, 3).join(', ') || '',
-    cover_url,
-    file_url,
+    cover_url, file_url,
     downloads:   g.download_count || 0,
-    rating:      0,
-    pages:       0,
+    rating: 0, pages: 0,
     year:        g.authors?.[0]?.birth_year || null,
-    _gutenberg:  true, // flag — not in our DB
+    _external: true,
   };
 }
 
-async function fetchGutenberg(query) {
-  try {
-    const res  = await fetch(`https://gutendex.com/books/?search=${encodeURIComponent(query)}&mime_type=application/pdf`);
-    const data = await res.json();
-    return (data.results || []).map(gutToBook).filter(b => b.file_url);
-  } catch {
-    return [];
-  }
+function olToBook(doc) {
+  const cover_url = doc.cover_i
+    ? `https://covers.openlibrary.org/b/id/${doc.cover_i}-M.jpg` : null;
+  const olKey    = doc.key?.replace('/works/', '');
+  const file_url = olKey ? `https://openlibrary.org/works/${olKey}` : null;
+  return {
+    id: `ol-${doc.key}`,
+    title:       doc.title,
+    author:      Array.isArray(doc.author_name) ? doc.author_name[0] : 'Unknown',
+    category:    guessCategory(doc.subject || []),
+    description: (doc.subject || []).slice(0, 3).join(', '),
+    cover_url, file_url,
+    downloads:   doc.readinglog_count || 0,
+    rating:      doc.ratings_average ? +doc.ratings_average.toFixed(1) : 0,
+    pages:       doc.number_of_pages_median || 0,
+    year:        doc.first_publish_year || null,
+    _external: true, _ol: true,
+  };
+}
+
+async function fetchExternal(query) {
+  const [gutRes, olRes] = await Promise.allSettled([
+    fetch(`https://gutendex.com/books/?search=${encodeURIComponent(query)}&mime_type=application/pdf`)
+      .then(r => r.json())
+      .then(d => (d.results || []).map(gutToBook).filter(b => b.file_url)),
+    fetch(`https://openlibrary.org/search.json?q=${encodeURIComponent(query)}&fields=key,title,author_name,cover_i,subject,first_publish_year,number_of_pages_median,ratings_average,readinglog_count&limit=16`)
+      .then(r => r.json())
+      .then(d => (d.docs || []).map(olToBook).filter(b => b.cover_url)),
+  ]);
+
+  const gut = gutRes.status === 'fulfilled' ? gutRes.value : [];
+  const ol  = olRes.status  === 'fulfilled' ? olRes.value  : [];
+
+  // Merge, deduplicate by lowercase title
+  const seen = new Set(gut.map(b => b.title.toLowerCase()));
+  return [...gut, ...ol.filter(b => !seen.has(b.title.toLowerCase()))];
 }
 
 // ─── Home ─────────────────────────────────────────────────────────────────────
@@ -52,15 +77,15 @@ export default function Home() {
   const { supabase, categories, navigate } = useApp();
 
   const [dbBooks,        setDbBooks]        = useState([]);
-  const [gutBooks,       setGutBooks]       = useState([]);
+  const [extBooks,       setExtBooks]       = useState([]);
   const [dbLoading,      setDbLoading]      = useState(true);
-  const [gutLoading,     setGutLoading]     = useState(false);
+  const [extLoading,     setExtLoading]     = useState(false);
   const [query,          setQuery]          = useState('');
   const [activeCategory, setActiveCategory] = useState('All');
 
   const searchTimer = useRef(null);
 
-  // Load our database books once
+  // Load our DB books once
   useEffect(() => {
     async function fetchBooks() {
       setDbLoading(true);
@@ -73,27 +98,26 @@ export default function Home() {
     fetchBooks();
   }, [supabase]);
 
-  // Silent Gutenberg fetch — fires when user types, debounced
-  const fetchFromGutenberg = useCallback(async (q) => {
-    if (!q || q.length < 2) { setGutBooks([]); return; }
-    setGutLoading(true);
-    const results = await fetchGutenberg(q);
-    // Only show Gutenberg books not already in our DB
+  // Fetch external sources silently when user types
+  const fetchFromExternal = useCallback(async (q) => {
+    if (!q || q.length < 2) { setExtBooks([]); return; }
+    setExtLoading(true);
+    const results = await fetchExternal(q);
+    // Remove titles already in our DB
     const dbTitles = new Set(dbBooks.map(b => b.title.toLowerCase()));
-    setGutBooks(results.filter(b => !dbTitles.has(b.title.toLowerCase())));
-    setGutLoading(false);
+    setExtBooks(results.filter(b => !dbTitles.has(b.title.toLowerCase())));
+    setExtLoading(false);
   }, [dbBooks]);
 
-  // Debounce search → auto-fetch Gutenberg
+  // Debounce 600ms
   useEffect(() => {
     if (searchTimer.current) clearTimeout(searchTimer.current);
-    if (query.length < 2) { setGutBooks([]); return; }
-    searchTimer.current = setTimeout(() => fetchFromGutenberg(query), 600);
+    if (!query || query.length < 2) { setExtBooks([]); return; }
+    searchTimer.current = setTimeout(() => fetchFromExternal(query), 600);
     return () => clearTimeout(searchTimer.current);
-  }, [query, fetchFromGutenberg]);
+  }, [query, fetchFromExternal]);
 
-
-  // DB books filtered by query + category
+  // DB books filtered normally
   const filteredDb = dbBooks.filter(book => {
     const matchCat   = activeCategory === 'All' || book.category === activeCategory;
     const matchQuery = !query ||
@@ -102,12 +126,12 @@ export default function Home() {
     return matchCat && matchQuery;
   });
 
-  // Gutenberg results already match the query — just filter by category
-  const filteredGut = gutBooks.filter(book =>
+  // External results already match query — just filter by category
+  const filteredExt = extBooks.filter(book =>
     activeCategory === 'All' || book.category === activeCategory
   );
 
-  const filtered = [...filteredDb, ...filteredGut];
+  const filtered = [...filteredDb, ...filteredExt];
 
   const stats = {
     books:      dbBooks.length,
@@ -118,8 +142,6 @@ export default function Home() {
       : '—',
   };
 
-  const loading = dbLoading;
-
   return (
     <div className="page">
       <Hero stats={stats} navigate={navigate} />
@@ -128,7 +150,7 @@ export default function Home() {
         <div className="container">
 
           {/* Search */}
-          <div className="search-wrap reveal" data-reveal>
+          <div className="search-wrap reveal" data-reveal style={{ position: 'relative' }}>
             <span className="search-icon">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                 <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
@@ -141,8 +163,8 @@ export default function Home() {
               value={query}
               onChange={e => setQuery(e.target.value)}
             />
-            {gutLoading && (
-              <span style={{ position: 'absolute', right: 16, top: '50%', transform: 'translateY(-50%)', fontSize: 11, color: 'var(--text-tertiary)' }}>
+            {extLoading && (
+              <span style={{ position: 'absolute', right: 16, top: '50%', transform: 'translateY(-50%)', fontSize: 11, color: 'var(--text-tertiary)', pointerEvents: 'none' }}>
                 Searching…
               </span>
             )}
@@ -166,7 +188,7 @@ export default function Home() {
             <h2 className="section-title">
               {activeCategory === 'All' ? 'All books' : activeCategory}
             </h2>
-            {!loading && (
+            {!dbLoading && (
               <span className="section-count">
                 {filtered.length} {filtered.length === 1 ? 'book' : 'books'}
               </span>
@@ -174,7 +196,7 @@ export default function Home() {
           </div>
 
           {/* Loading skeletons */}
-          {loading && (
+          {dbLoading && (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 'var(--space-6)' }}>
               {[...Array(6)].map((_, i) => (
                 <div key={i}>
@@ -187,13 +209,13 @@ export default function Home() {
           )}
 
           {/* Book grid */}
-          {!loading && (
+          {!dbLoading && (
             <div className="book-grid">
               {filtered.map((book, i) => (
                 <BookCard key={book.id} book={book} navigate={navigate} index={i} />
               ))}
 
-              {filtered.length === 0 && !gutLoading && (
+              {filtered.length === 0 && !extLoading && (
                 <div style={{ gridColumn: '1/-1', padding: 'var(--space-20) 0', textAlign: 'center', color: 'var(--text-tertiary)' }}>
                   <p style={{ marginBottom: 'var(--space-3)', fontSize: 'var(--text-base)' }}>
                     {query ? `No results for "${query}"` : 'No books yet.'}
@@ -204,6 +226,17 @@ export default function Home() {
                     </button>
                   )}
                 </div>
+              )}
+
+              {/* Loading placeholders while external results arrive */}
+              {extLoading && filtered.length === 0 && (
+                [...Array(4)].map((_, i) => (
+                  <div key={`skel-${i}`}>
+                    <div className="skeleton" style={{ aspectRatio: '2/3', borderRadius: 'var(--radius-md)', marginBottom: 'var(--space-4)' }} />
+                    <div className="skeleton" style={{ height: 14, width: '80%', marginBottom: 8 }} />
+                    <div className="skeleton" style={{ height: 11, width: '50%' }} />
+                  </div>
+                ))
               )}
             </div>
           )}
@@ -234,7 +267,6 @@ function Hero({ stats, navigate }) {
           </button>
         </div>
       </div>
-
       <div className="container">
         <div className="stats-strip reveal" data-reveal>
           <StatItem value={stats.books} label="Books" />
@@ -259,8 +291,9 @@ function StatItem({ value, label }) {
 // ─── Book card ────────────────────────────────────────────────────────────────
 function BookCard({ book, navigate, index }) {
   const handleClick = () => {
-    // Gutenberg books open their PDF directly — no detail page in our DB
-    if (book._gutenberg) {
+    if (book._ol) {
+      window.open(`https://openlibrary.org${book.id.replace('ol-', '').replace(/^\/works/, '/works')}`, '_blank');
+    } else if (book._external) {
       window.open(book.file_url, '_blank');
     } else {
       navigate(`/book/${book.id}`);
@@ -268,11 +301,7 @@ function BookCard({ book, navigate, index }) {
   };
 
   return (
-    <article
-      className="book-card"
-      style={{ animationDelay: `${index * 40}ms` }}
-      onClick={handleClick}
-    >
+    <article className="book-card" style={{ animationDelay: `${index * 40}ms` }} onClick={handleClick}>
       <div className="book-cover">
         {book.cover_url
           ? <img src={book.cover_url} alt={book.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
