@@ -2,11 +2,10 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useApp } from '../App';
 
 const TINTS = {
-  Design: '#E8E6DF', Technology: '#E4E5E8', Philosophy: '#EAE8E2',
-  Science: '#E6E8E4', Literature: '#ECE9E3', Business: '#E9E7E2',
+  Design: '#1a3a5c', Technology: '#0d2137', Philosophy: '#2a1a4a',
+  Science: '#0a2a1a', Literature: '#3a1a1a', Business: '#1a2a0a',
 };
 
-// ─── External sources (silent) ────────────────────────────────────────────────
 function guessCategory(subjects = []) {
   const s = subjects.join(' ').toLowerCase();
   if (s.includes('philosoph'))                            return 'Philosophy';
@@ -23,33 +22,31 @@ function gutToBook(g) {
   const cover_url = formats['image/jpeg'] || formats['image/png'] || null;
   return {
     id: `gut-${g.id}`, title: g.title,
-    author:      g.authors?.[0]?.name || 'Unknown',
-    category:    guessCategory(g.subjects),
+    author: g.authors?.[0]?.name || 'Unknown',
+    category: guessCategory(g.subjects),
     description: g.subjects?.slice(0, 3).join(', ') || '',
     cover_url, file_url,
-    downloads:   g.download_count || 0,
+    downloads: g.download_count || 0,
     rating: 0, pages: 0,
-    year:        g.authors?.[0]?.birth_year || null,
+    year: g.authors?.[0]?.birth_year || null,
     _external: true,
   };
 }
 
 function olToBook(doc) {
-  const cover_url = doc.cover_i
-    ? `https://covers.openlibrary.org/b/id/${doc.cover_i}-M.jpg` : null;
-  const olKey    = doc.key?.replace('/works/', '');
-  const file_url = olKey ? `https://openlibrary.org/works/${olKey}` : null;
+  const cover_url = doc.cover_i ? `https://covers.openlibrary.org/b/id/${doc.cover_i}-M.jpg` : null;
+  const olKey     = doc.key?.replace('/works/', '');
+  const file_url  = olKey ? `https://openlibrary.org/works/${olKey}` : null;
   return {
-    id: `ol-${doc.key}`,
-    title:       doc.title,
-    author:      Array.isArray(doc.author_name) ? doc.author_name[0] : 'Unknown',
-    category:    guessCategory(doc.subject || []),
+    id: `ol-${doc.key}`, title: doc.title,
+    author: Array.isArray(doc.author_name) ? doc.author_name[0] : 'Unknown',
+    category: guessCategory(doc.subject || []),
     description: (doc.subject || []).slice(0, 3).join(', '),
     cover_url, file_url,
-    downloads:   doc.readinglog_count || 0,
-    rating:      doc.ratings_average ? +doc.ratings_average.toFixed(1) : 0,
-    pages:       doc.number_of_pages_median || 0,
-    year:        doc.first_publish_year || null,
+    downloads: doc.readinglog_count || 0,
+    rating: doc.ratings_average ? +doc.ratings_average.toFixed(1) : 0,
+    pages: doc.number_of_pages_median || 0,
+    year: doc.first_publish_year || null,
     _external: true, _ol: true,
   };
 }
@@ -57,35 +54,39 @@ function olToBook(doc) {
 async function fetchExternal(query) {
   const [gutRes, olRes] = await Promise.allSettled([
     fetch(`https://gutendex.com/books/?search=${encodeURIComponent(query)}&mime_type=application/pdf`)
-      .then(r => r.json())
-      .then(d => (d.results || []).map(gutToBook).filter(b => b.file_url)),
+      .then(r => r.json()).then(d => (d.results || []).map(gutToBook).filter(b => b.file_url)),
     fetch(`https://openlibrary.org/search.json?q=${encodeURIComponent(query)}&fields=key,title,author_name,cover_i,subject,first_publish_year,number_of_pages_median,ratings_average,readinglog_count&limit=16`)
-      .then(r => r.json())
-      .then(d => (d.docs || []).map(olToBook).filter(b => b.cover_url)),
+      .then(r => r.json()).then(d => (d.docs || []).map(olToBook).filter(b => b.cover_url)),
   ]);
-
-  const gut = gutRes.status === 'fulfilled' ? gutRes.value : [];
-  const ol  = olRes.status  === 'fulfilled' ? olRes.value  : [];
-
-  // Merge, deduplicate by lowercase title
+  const gut  = gutRes.status === 'fulfilled' ? gutRes.value : [];
+  const ol   = olRes.status  === 'fulfilled' ? olRes.value  : [];
   const seen = new Set(gut.map(b => b.title.toLowerCase()));
   return [...gut, ...ol.filter(b => !seen.has(b.title.toLowerCase()))];
 }
 
-// ─── Home ─────────────────────────────────────────────────────────────────────
-export default function Home() {
-  const { supabase, categories, navigate } = useApp();
+const NAV_SECTIONS = [
+  { id: 'reading-now', label: 'Reading Now', icon: BookOpenIcon },
+  { id: 'all',         label: 'All Books',   icon: GridIcon },
+  { id: 'want-to-read',label: 'Want to Read',icon: BookmarkIcon },
+  { id: 'finished',    label: 'Finished',    icon: CheckIcon },
+];
 
-  const [dbBooks,        setDbBooks]        = useState([]);
-  const [extBooks,       setExtBooks]       = useState([]);
-  const [dbLoading,      setDbLoading]      = useState(true);
-  const [extLoading,     setExtLoading]     = useState(false);
-  const [query,          setQuery]          = useState('');
-  const [activeCategory, setActiveCategory] = useState('All');
+const CATEGORIES = ['All', 'Design', 'Technology', 'Philosophy', 'Science', 'Literature', 'Business'];
+
+export default function Home() {
+  const { supabase, navigate, session } = useApp();
+
+  const [dbBooks,      setDbBooks]      = useState([]);
+  const [extBooks,     setExtBooks]     = useState([]);
+  const [dbLoading,    setDbLoading]    = useState(true);
+  const [extLoading,   setExtLoading]   = useState(false);
+  const [query,        setQuery]        = useState('');
+  const [activeSection,setActiveSection]= useState('all');
+  const [activeCategory,setActiveCategory] = useState('All');
+  const [sidebarOpen,  setSidebarOpen]  = useState(false);
 
   const searchTimer = useRef(null);
 
-  // Load our DB books once
   useEffect(() => {
     async function fetchBooks() {
       setDbLoading(true);
@@ -98,18 +99,15 @@ export default function Home() {
     fetchBooks();
   }, [supabase]);
 
-  // Fetch external sources silently when user types
   const fetchFromExternal = useCallback(async (q) => {
     if (!q || q.length < 2) { setExtBooks([]); return; }
     setExtLoading(true);
-    const results = await fetchExternal(q);
-    // Remove titles already in our DB
+    const results  = await fetchExternal(q);
     const dbTitles = new Set(dbBooks.map(b => b.title.toLowerCase()));
     setExtBooks(results.filter(b => !dbTitles.has(b.title.toLowerCase())));
     setExtLoading(false);
   }, [dbBooks]);
 
-  // Debounce 600ms
   useEffect(() => {
     if (searchTimer.current) clearTimeout(searchTimer.current);
     if (!query || query.length < 2) { setExtBooks([]); return; }
@@ -117,7 +115,6 @@ export default function Home() {
     return () => clearTimeout(searchTimer.current);
   }, [query, fetchFromExternal]);
 
-  // DB books filtered normally
   const filteredDb = dbBooks.filter(book => {
     const matchCat   = activeCategory === 'All' || book.category === activeCategory;
     const matchQuery = !query ||
@@ -126,227 +123,316 @@ export default function Home() {
     return matchCat && matchQuery;
   });
 
-  // External results already match query — just filter by category
   const filteredExt = extBooks.filter(book =>
     activeCategory === 'All' || book.category === activeCategory
   );
 
   const filtered = [...filteredDb, ...filteredExt];
 
-  const stats = {
-    books:      dbBooks.length,
-    downloads:  dbBooks.reduce((s, b) => s + (b.downloads || 0), 0),
-    categories: categories.filter(c => c !== 'All').length,
-    avgRating:  dbBooks.length
-      ? (dbBooks.reduce((s, b) => s + (b.rating || 0), 0) / dbBooks.length).toFixed(1)
-      : '—',
+  const handleBookClick = (book) => {
+    if (book._ol)       window.open(`https://openlibrary.org${book.id.replace('ol-', '')}`, '_blank');
+    else if (book._external) window.open(book.file_url, '_blank');
+    else                navigate(`/book/${book.id}`);
   };
 
   return (
-    <div className="page">
-      <Hero stats={stats} navigate={navigate} />
+    <div className="app-shell">
+      {/* ── Sidebar ── */}
+      <aside className={`sidebar${sidebarOpen ? ' sidebar--open' : ''}`}>
+        <div className="sidebar-logo">LumioBooks</div>
 
-      <section style={{ padding: '0 0 var(--space-24)' }}>
-        <div className="container">
+        <div className="sidebar-search">
+          <SearchIcon />
+          <input
+            className="sidebar-search-input"
+            type="search"
+            placeholder="Search"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+          />
+          {extLoading && <span className="sidebar-search-spinner" />}
+        </div>
 
-          {/* Search */}
-          <div className="search-wrap reveal" data-reveal style={{ position: 'relative' }}>
-            <span className="search-icon">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-              </svg>
-            </span>
-            <input
-              className="search-input"
-              type="search"
-              placeholder="Search any book or author…"
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-            />
-            {extLoading && (
-              <span style={{ position: 'absolute', right: 16, top: '50%', transform: 'translateY(-50%)', fontSize: 11, color: 'var(--text-tertiary)', pointerEvents: 'none' }}>
-                Searching…
-              </span>
-            )}
-          </div>
+        <nav className="sidebar-nav">
+          <p className="sidebar-section-label">Library</p>
+          {NAV_SECTIONS.map(s => (
+            <button
+              key={s.id}
+              className={`sidebar-nav-item${activeSection === s.id ? ' active' : ''}`}
+              onClick={() => { setActiveSection(s.id); setSidebarOpen(false); }}
+            >
+              <s.icon />
+              {s.label}
+            </button>
+          ))}
 
-          {/* Category pills */}
-          <div className="category-bar reveal" data-reveal>
-            {categories.map(cat => (
-              <button
-                key={cat}
-                className={`category-pill${activeCategory === cat ? ' category-pill--active' : ''}`}
-                onClick={() => setActiveCategory(cat)}
-              >
-                {cat}
-              </button>
-            ))}
-          </div>
+          <p className="sidebar-section-label" style={{ marginTop: 'var(--space-6)' }}>Categories</p>
+          {CATEGORIES.filter(c => c !== 'All').map(cat => (
+            <button
+              key={cat}
+              className={`sidebar-nav-item${activeCategory === cat && activeSection === 'all' ? ' active' : ''}`}
+              onClick={() => { setActiveCategory(cat); setActiveSection('all'); setSidebarOpen(false); }}
+            >
+              <DotIcon />
+              {cat}
+            </button>
+          ))}
+        </nav>
 
-          {/* Grid header */}
-          <div className="section-header reveal" data-reveal>
-            <h2 className="section-title">
-              {activeCategory === 'All' ? 'All books' : activeCategory}
-            </h2>
-            {!dbLoading && (
-              <span className="section-count">
-                {filtered.length} {filtered.length === 1 ? 'book' : 'books'}
-              </span>
-            )}
-          </div>
-
-          {/* Loading skeletons */}
-          {dbLoading && (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 'var(--space-6)' }}>
-              {[...Array(6)].map((_, i) => (
-                <div key={i}>
-                  <div className="skeleton" style={{ aspectRatio: '2/3', borderRadius: 'var(--radius-md)', marginBottom: 'var(--space-4)' }} />
-                  <div className="skeleton" style={{ height: 14, width: '80%', marginBottom: 8 }} />
-                  <div className="skeleton" style={{ height: 11, width: '50%' }} />
-                </div>
-              ))}
+        {session && (
+          <div className="sidebar-user" onClick={() => navigate('/account')}>
+            <div className="sidebar-avatar">
+              {session.user.email.slice(0, 2).toUpperCase()}
             </div>
+            <span className="sidebar-username">
+              {session.user.email.split('@')[0]}
+            </span>
+          </div>
+        )}
+      </aside>
+
+      {/* ── Main content ── */}
+      <main className="shell-main">
+        {/* Mobile top bar */}
+        <div className="shell-topbar">
+          <button className="shell-menu-btn" onClick={() => setSidebarOpen(s => !s)}>
+            <MenuIcon />
+          </button>
+          <span className="shell-topbar-title">
+            {NAV_SECTIONS.find(s => s.id === activeSection)?.label || activeCategory}
+          </span>
+          {!session && (
+            <button className="btn btn-primary" style={{ padding: 'var(--space-2) var(--space-4)', fontSize: 'var(--text-sm)' }} onClick={() => navigate('/auth')}>
+              Sign in
+            </button>
+          )}
+        </div>
+
+        {/* Content area */}
+        <div className="shell-content">
+          {/* Reading Now */}
+          {activeSection === 'reading-now' && (
+            <ReadingNow dbBooks={dbBooks} navigate={navigate} session={session} />
           )}
 
-          {/* Book grid */}
-          {!dbLoading && (
-            <div className="book-grid">
-              {filtered.map((book, i) => (
-                <BookCard key={book.id} book={book} navigate={navigate} index={i} />
-              ))}
+          {/* All Books / Category */}
+          {activeSection === 'all' && (
+            <>
+              <div className="shell-header">
+                <h1 className="shell-title">
+                  {query ? `Results for "${query}"` : activeCategory === 'All' ? 'All Books' : activeCategory}
+                </h1>
+                {!dbLoading && (
+                  <span className="shell-count">
+                    {filtered.length} {filtered.length === 1 ? 'book' : 'books'}
+                  </span>
+                )}
+              </div>
 
-              {filtered.length === 0 && !extLoading && (
-                <div style={{ gridColumn: '1/-1', padding: 'var(--space-20) 0', textAlign: 'center', color: 'var(--text-tertiary)' }}>
-                  <p style={{ marginBottom: 'var(--space-3)', fontSize: 'var(--text-base)' }}>
-                    {query ? `No results for "${query}"` : 'No books yet.'}
-                  </p>
-                  {query && (
-                    <button className="btn btn-ghost" onClick={() => { setQuery(''); setActiveCategory('All'); }}>
-                      Clear search
+              {/* Category pills — horizontal scroll */}
+              {!query && (
+                <div className="shell-pills">
+                  {CATEGORIES.map(cat => (
+                    <button
+                      key={cat}
+                      className={`shell-pill${activeCategory === cat ? ' active' : ''}`}
+                      onClick={() => setActiveCategory(cat)}
+                    >
+                      {cat}
                     </button>
+                  ))}
+                </div>
+              )}
+
+              {dbLoading ? (
+                <div className="book-grid">
+                  {[...Array(8)].map((_, i) => (
+                    <div key={i} className="book-card-skeleton">
+                      <div className="skeleton" style={{ aspectRatio: '2/3', borderRadius: 'var(--radius-md)', marginBottom: 'var(--space-3)' }} />
+                      <div className="skeleton" style={{ height: 13, width: '75%', marginBottom: 6 }} />
+                      <div className="skeleton" style={{ height: 11, width: '50%' }} />
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="book-grid">
+                  {filtered.map((book, i) => (
+                    <BookCard key={book.id} book={book} onClick={() => handleBookClick(book)} index={i} />
+                  ))}
+                  {extLoading && filtered.length === 0 && (
+                    [...Array(4)].map((_, i) => (
+                      <div key={`s${i}`} className="book-card-skeleton">
+                        <div className="skeleton" style={{ aspectRatio: '2/3', borderRadius: 'var(--radius-md)', marginBottom: 'var(--space-3)' }} />
+                        <div className="skeleton" style={{ height: 13, width: '75%', marginBottom: 6 }} />
+                        <div className="skeleton" style={{ height: 11, width: '50%' }} />
+                      </div>
+                    ))
+                  )}
+                  {filtered.length === 0 && !extLoading && (
+                    <div style={{ gridColumn: '1/-1', textAlign: 'center', padding: 'var(--space-20) 0', color: 'var(--text-tertiary)' }}>
+                      <p style={{ marginBottom: 'var(--space-4)' }}>
+                        {query ? `No results for "${query}"` : 'No books here yet.'}
+                      </p>
+                      {query && (
+                        <button className="btn btn-ghost" onClick={() => setQuery('')}>Clear search</button>
+                      )}
+                    </div>
                   )}
                 </div>
               )}
+            </>
+          )}
 
-              {/* Loading placeholders while external results arrive */}
-              {extLoading && filtered.length === 0 && (
-                [...Array(4)].map((_, i) => (
-                  <div key={`skel-${i}`}>
-                    <div className="skeleton" style={{ aspectRatio: '2/3', borderRadius: 'var(--radius-md)', marginBottom: 'var(--space-4)' }} />
-                    <div className="skeleton" style={{ height: 14, width: '80%', marginBottom: 8 }} />
-                    <div className="skeleton" style={{ height: 11, width: '50%' }} />
-                  </div>
-                ))
-              )}
-            </div>
+          {/* Want to Read */}
+          {activeSection === 'want-to-read' && (
+            <EmptySection
+              icon={<BookmarkIcon />}
+              title="Want to Read"
+              sub="Books you save will appear here."
+              action="Browse library"
+              onAction={() => setActiveSection('all')}
+            />
+          )}
+
+          {/* Finished */}
+          {activeSection === 'finished' && (
+            <EmptySection
+              icon={<CheckIcon />}
+              title="Finished"
+              sub="Books you've completed will appear here."
+              action="Browse library"
+              onAction={() => setActiveSection('all')}
+            />
           )}
         </div>
-      </section>
+      </main>
 
-      <RevealObserver />
+      {/* Sidebar overlay on mobile */}
+      {sidebarOpen && (
+        <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />
+      )}
     </div>
   );
 }
 
-// ─── Hero ─────────────────────────────────────────────────────────────────────
-function Hero({ stats, navigate }) {
+// ─── Reading Now ─────────────────────────────────────────────────────────────
+function ReadingNow({ dbBooks, navigate, session }) {
+  if (!session) {
+    return (
+      <EmptySection
+        icon={<BookOpenIcon />}
+        title="Reading Now"
+        sub="Sign in to track your reading progress."
+        action="Sign in"
+        onAction={() => navigate('/auth')}
+      />
+    );
+  }
   return (
-    <section className="hero">
-      <div className="container">
-        <p className="hero-eyebrow reveal" data-reveal>Free knowledge for everyone</p>
-        <h1 className="hero-title reveal" data-reveal>
-          Read what <em>matters</em>,<br />whenever you want.
-        </h1>
-        <p className="hero-sub reveal" data-reveal>
-          A curated library of PDF books. Read online, download freely, share generously.
-        </p>
-        <div className="hero-actions reveal" data-reveal>
-          <button className="btn btn-primary" onClick={() => navigate('/auth')}>Get started free</button>
-          <button className="btn btn-secondary" onClick={() => document.querySelector('.search-wrap')?.scrollIntoView({ behavior: 'smooth' })}>
-            Browse library
-          </button>
-        </div>
+    <div>
+      <div className="shell-header">
+        <h1 className="shell-title">Reading Now</h1>
       </div>
-      <div className="container">
-        <div className="stats-strip reveal" data-reveal>
-          <StatItem value={stats.books} label="Books" />
-          <StatItem value={stats.downloads > 0 ? `${(stats.downloads / 1000).toFixed(0)}k+` : '0'} label="Downloads" />
-          <StatItem value={stats.categories} label="Categories" />
-          <StatItem value={stats.avgRating} label="Avg rating" />
+      {dbBooks.length === 0 ? (
+        <EmptySection
+          icon={<BookOpenIcon />}
+          title="Nothing yet"
+          sub="Open a book to start reading."
+        />
+      ) : (
+        <div className="reading-now-grid">
+          {dbBooks.slice(0, 4).map(book => (
+            <div key={book.id} className="reading-card" onClick={() => navigate(`/read/${book.id}`)}>
+              <div className="reading-cover">
+                {book.cover_url
+                  ? <img src={book.cover_url} alt={book.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  : <div style={{ width: '100%', height: '100%', background: TINTS[book.category] || '#1a3a5c', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--font-display)', fontSize: 48, color: 'rgba(255,255,255,0.3)' }}>{book.title?.[0]}</div>
+                }
+              </div>
+              <p className="reading-title">{book.title}</p>
+              <p className="reading-author">{book.author}</p>
+              <div className="reading-progress-bar">
+                <div className="reading-progress-fill" style={{ width: '2%' }} />
+              </div>
+              <p className="reading-progress-label">2%</p>
+            </div>
+          ))}
         </div>
-      </div>
-    </section>
-  );
-}
-
-function StatItem({ value, label }) {
-  return (
-    <div className="stat-item">
-      <div className="stat-value">{value}</div>
-      <div className="stat-label">{label}</div>
+      )}
     </div>
   );
 }
 
 // ─── Book card ────────────────────────────────────────────────────────────────
-function BookCard({ book, navigate, index }) {
-  const handleClick = () => {
-    if (book._ol) {
-      window.open(`https://openlibrary.org${book.id.replace('ol-', '').replace(/^\/works/, '/works')}`, '_blank');
-    } else if (book._external) {
-      window.open(book.file_url, '_blank');
-    } else {
-      navigate(`/book/${book.id}`);
-    }
-  };
-
+function BookCard({ book, onClick, index }) {
   return (
-    <article className="book-card" style={{ animationDelay: `${index * 40}ms` }} onClick={handleClick}>
+    <article className="book-card" style={{ animationDelay: `${index * 30}ms` }} onClick={onClick}>
       <div className="book-cover">
         {book.cover_url
-          ? <img src={book.cover_url} alt={book.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-          : <BookCoverPlaceholder book={book} />
+          ? <img src={book.cover_url} alt={book.title} style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 'var(--radius-md)' }} />
+          : <div style={{
+              width: '100%', height: '100%', borderRadius: 'var(--radius-md)',
+              background: `linear-gradient(135deg, ${TINTS[book.category] || '#1a3a5c'}, #000f22)`,
+              display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+              padding: 'var(--space-4)', textAlign: 'center',
+            }}>
+              <span style={{ fontFamily: 'var(--font-display)', fontSize: 'clamp(1.5rem, 5vw, 2.5rem)', color: 'rgba(255,255,255,0.9)', lineHeight: 1.2, marginBottom: 'var(--space-3)' }}>
+                {book.title.split(' ').slice(0, 3).join(' ')}
+              </span>
+              <span style={{ fontSize: 'var(--text-xs)', color: 'rgba(255,255,255,0.4)', letterSpacing: '0.05em' }}>
+                {book.author}
+              </span>
+            </div>
+          }
         }
       </div>
       <div className="book-info">
         <h3 className="book-title">{book.title}</h3>
         <p className="book-author">{book.author}</p>
-        <div className="book-meta">
-          {book.rating > 0 && (
+        {book.rating > 0 && (
+          <div className="book-meta">
             <span className="book-rating">
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
               {book.rating}
             </span>
-          )}
-          <span className="book-pages">{book.category}</span>
-        </div>
+          </div>
+        )}
       </div>
     </article>
   );
 }
 
-function BookCoverPlaceholder({ book }) {
+// ─── Empty section ────────────────────────────────────────────────────────────
+function EmptySection({ icon, title, sub, action, onAction }) {
   return (
-    <div className="book-cover-placeholder" style={{ background: TINTS[book.category] || 'var(--bg-raised)' }}>
-      <span className="book-cover-letter">{book.title?.[0] || '?'}</span>
-      <span className="book-cover-line" />
-      <span className="book-cover-cat">{book.category}</span>
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '50vh', textAlign: 'center', gap: 'var(--space-4)' }}>
+      <div style={{ opacity: 0.2, transform: 'scale(1.5)' }}>{icon}</div>
+      <h2 style={{ fontFamily: 'var(--font-display)', fontSize: 'var(--text-xl)', fontWeight: 600, marginTop: 'var(--space-4)' }}>{title}</h2>
+      <p style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-sm)', maxWidth: 280 }}>{sub}</p>
+      {action && <button className="btn btn-secondary" onClick={onAction} style={{ marginTop: 'var(--space-2)' }}>{action}</button>}
     </div>
   );
 }
 
-// ─── Scroll reveal ────────────────────────────────────────────────────────────
-function RevealObserver() {
-  useEffect(() => {
-    const els = document.querySelectorAll('[data-reveal]');
-    const io  = new IntersectionObserver(
-      entries => entries.forEach(e => {
-        if (e.isIntersecting) { e.target.classList.add('in-view'); io.unobserve(e.target); }
-      }),
-      { threshold: 0.08, rootMargin: '0px 0px -40px 0px' }
-    );
-    els.forEach(el => io.observe(el));
-    return () => io.disconnect();
-  }, []);
-  return null;
+// ─── Icons ────────────────────────────────────────────────────────────────────
+function BookOpenIcon() {
+  return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>;
+}
+function GridIcon() {
+  return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>;
+}
+function BookmarkIcon() {
+  return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>;
+}
+function CheckIcon() {
+  return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>;
+}
+function SearchIcon() {
+  return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>;
+}
+function MenuIcon() {
+  return <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>;
+}
+function DotIcon() {
+  return <svg width="6" height="6" viewBox="0 0 6 6" fill="currentColor"><circle cx="3" cy="3" r="3"/></svg>;
 }

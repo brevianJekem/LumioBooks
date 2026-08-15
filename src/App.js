@@ -132,17 +132,19 @@ export default function App() {
     return <Home />;
   };
 
+  const isHome = route === '/' || route === '';
+
   return (
     <AppContext.Provider value={ctx}>
       <div className="app">
-        <Nav
+        {!isHome && <Nav
           theme={theme}
           session={session}
           navigate={navigate}
           onToggleTheme={() => setTheme(t => t === 'light' ? 'dark' : 'light')}
-        />
-        <main className="app-main">{renderRoute()}</main>
-        <Footer navigate={navigate} />
+        />}
+        <main className={isHome ? '' : 'app-main'}>{renderRoute()}</main>
+        {!isHome && <Footer navigate={navigate} />}
       </div>
     </AppContext.Provider>
   );
@@ -303,6 +305,19 @@ function Footer({ navigate }) {
           <button onClick={() => navigate('/auth')}>Sign in</button>
         </nav>
         <p className="footer-copy">© {new Date().getFullYear()} LumioBooks</p>
+        <p style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', marginTop: 'var(--space-2)' }}>
+          Made with precision by{' '}
+          <a
+            href="https://brevian.online"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ color: 'var(--text-secondary)', fontWeight: 500, textDecoration: 'none', borderBottom: '1px solid var(--border)' }}
+            onMouseEnter={e => e.target.style.color = 'var(--text-primary)'}
+            onMouseLeave={e => e.target.style.color = 'var(--text-secondary)'}
+          >
+            JEPS Kenya
+          </a>
+        </p>
       </div>
     </footer>
   );
