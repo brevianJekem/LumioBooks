@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useApp } from '../App';
+import { getRecommendations, generateSummary } from '../ai';
 
 const TINTS = {
   Design: '#E8E6DF', Technology: '#E4E5E8',
@@ -10,14 +11,17 @@ const TINTS = {
 export default function BookDetail({ bookId }) {
   const { navigate, session, supabase } = useApp();
 
-  const [book,       setBook]       = useState(null);
-  const [loading,    setLoading]    = useState(true);
-  const [reviews,    setReviews]    = useState([]);
-  const [newReview,  setNewReview]  = useState('');
-  const [starRating, setStarRating] = useState(0);
-  const [hoverStar,  setHoverStar]  = useState(0);
-  const [submitting, setSubmitting] = useState(false);
-  const [toast,      setToast]      = useState(null);
+  const [book,         setBook]         = useState(null);
+  const [loading,      setLoading]      = useState(true);
+  const [reviews,      setReviews]      = useState([]);
+  const [newReview,    setNewReview]    = useState('');
+  const [starRating,   setStarRating]   = useState(0);
+  const [hoverStar,    setHoverStar]    = useState(0);
+  const [submitting,   setSubmitting]   = useState(false);
+  const [toast,        setToast]        = useState(null);
+  const [aiSummary,    setAiSummary]    = useState('');
+  const [recommended,  setRecommended]  = useState([]);
+  const [aiLoading,    setAiLoading]    = useState(false);
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 3000); };
 
@@ -41,14 +45,36 @@ export default function BookDetail({ bookId }) {
   useEffect(() => {
     async function fetchReviews() {
       const { data } = await supabase
-        .from('reviews')
-        .select('*')
-        .eq('book_id', bookId)
+        .from('reviews').select('*').eq('book_id', bookId)
         .order('created_at', { ascending: false });
       if (data) setReviews(data);
     }
     fetchReviews();
   }, [bookId, supabase]);
+
+  // AI — summary + recommendations (fires after book loads)
+  useEffect(() => {
+    if (!book) return;
+    async function runAI() {
+      setAiLoading(true);
+      try {
+        // Generate summary if description is missing or short
+        if (!book.description || book.description.length < 80) {
+          const summary = await generateSummary(book);
+          setAiSummary(summary);
+        }
+        // Get recommendations from other books
+        const { data: allBooks } = await supabase
+          .from('books').select('id,title,author,category,description').eq('status', 'approved');
+        if (allBooks?.length > 1) {
+          const recs = await getRecommendations(book, allBooks);
+          setRecommended(recs);
+        }
+      } catch { /* silent fail */ }
+      setAiLoading(false);
+    }
+    runAI();
+  }, [book, supabase]);
 
   const handleDownload = () => {
     if (!book?.file_url) { showToast('No file available yet.'); return; }
@@ -167,8 +193,16 @@ export default function BookDetail({ bookId }) {
               </div>
             </div>
 
-            {book.description && (
-              <p className="book-detail-desc">{book.description}</p>
+            {/* Description — AI-enhanced */}
+            {(book.description || aiSummary) && (
+              <p className="book-detail-desc">
+                {aiSummary || book.description}
+                {aiSummary && (
+                  <span style={{ display: 'block', fontSize: 10, color: 'var(--gold)', marginTop: 6, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+                    ✦ AI Summary
+                  </span>
+                )}
+              </p>
             )}
 
             <div className="book-detail-actions">
@@ -183,6 +217,46 @@ export default function BookDetail({ bookId }) {
             </div>
           </div>
         </div>
+
+        {/* AI Recommendations */}
+        {(recommended.length > 0 || aiLoading) && (
+          <div className="reviews-section">
+            <h2 className="reviews-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="var(--gold)"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z"/></svg>
+              You might also like
+            </h2>
+            {aiLoading && (
+              <div style={{ display: 'flex', gap: 'var(--space-4)', marginBottom: 'var(--space-4)' }}>
+                {[...Array(3)].map((_, i) => (
+                  <div key={i} style={{ flex: 1 }}>
+                    <div className="skeleton" style={{ aspectRatio: '2/3', borderRadius: 'var(--radius-md)', marginBottom: 8 }} />
+                    <div className="skeleton" style={{ height: 12, width: '80%', marginBottom: 4 }} />
+                    <div className="skeleton" style={{ height: 10, width: '60%' }} />
+                  </div>
+                ))}
+              </div>
+            )}
+            {!aiLoading && (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: 'var(--space-5)' }}>
+                {recommended.map(rec => (
+                  <div key={rec.id} style={{ cursor: 'pointer' }} onClick={() => navigate(`/book/${rec.id}`)}>
+                    <div style={{
+                      aspectRatio: '2/3', borderRadius: 'var(--radius-md)', overflow: 'hidden',
+                      background: 'var(--bg-sunken)', marginBottom: 'var(--space-2)',
+                      boxShadow: 'var(--shadow-md)',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontFamily: 'var(--font-display)', fontSize: 32, color: 'var(--text-tertiary)',
+                    }}>
+                      {rec.title?.[0]}
+                    </div>
+                    <p style={{ fontSize: 'var(--text-xs)', fontWeight: 600, marginBottom: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{rec.title}</p>
+                    <p style={{ fontSize: 10, color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{rec.author}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Reviews */}
         <div className="reviews-section">
