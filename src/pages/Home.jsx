@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useApp } from '../App';
-import { semanticSearch, expandQuery, isSemanticQuery } from '../ai';
+import { semanticSearch, expandQuery, isSemanticQuery } from '../ai.js';
 
 const TINTS = {
   Design: '#1a3a5c', Technology: '#0d2137', Philosophy: '#2a1a4a',

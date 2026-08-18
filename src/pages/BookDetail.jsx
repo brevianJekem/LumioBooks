@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useApp } from '../App';
-import { getRecommendations, generateSummary } from '../ai';
+import { getRecommendations, generateSummary } from '../ai.js';
 
 const TINTS = {
   Design: '#E8E6DF', Technology: '#E4E5E8',
